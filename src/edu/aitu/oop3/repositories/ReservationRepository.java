@@ -5,6 +5,7 @@ import edu.aitu.oop3.models.ParkingSpot;
 import edu.aitu.oop3.models.Reservation;
 import edu.aitu.oop3.models.Tariff;
 import edu.aitu.oop3.models.Vehicle;
+import edu.aitu.oop3.services.ParkingSpotFactory;
 
 import java.sql.*;
 
@@ -18,16 +19,16 @@ public class ReservationRepository implements IReservationRepository {
     @Override
     public Reservation findById(int id) {
         String sql = """
-            SELECT r.id, r.start_time, r.end_time,
-                   v.id AS v_id, v.licensePlate,
-                   ps.id AS ps_id, ps.is_reserved,
-                   t.id AS t_id, t.name, t.cost
-            FROM reservation r
-            JOIN vehicles v ON r.vehicle_id = v.id
-            JOIN parking_spot ps ON r.parking_spot_id = ps.id
-            JOIN tariff t ON ps.tariff_id = t.id
-            WHERE r.id = ?
-        """;
+        SELECT r.id, r.start_time, r.end_time,
+               v.id AS v_id, v.licensePlate,
+               ps.id AS ps_id, ps.is_reserved, ps.spot_type, -- Добавили spot_type
+               t.id AS t_id, t.name, t.cost
+        FROM reservation r
+        JOIN vehicles v ON r.vehicle_id = v.id
+        JOIN parking_spot ps ON r.parking_spot_id = ps.id
+        JOIN tariff t ON ps.tariff_id = t.id
+        WHERE r.id = ?
+    """;
 
         try (Connection conn = db.getConnection();
              PreparedStatement st = conn.prepareStatement(sql)) {
@@ -38,20 +39,19 @@ public class ReservationRepository implements IReservationRepository {
             if (rs.next()) {
                 Vehicle v = new Vehicle(rs.getInt("v_id"), rs.getString("licensePlate"));
                 Tariff t = new Tariff(rs.getInt("t_id"), rs.getString("name"), rs.getInt("cost"));
-                ParkingSpot ps = new ParkingSpot(rs.getInt("ps_id"), t, rs.getBoolean("is_reserved"));
 
-                return new Reservation(
-                        rs.getInt("id"),
-                        rs.getTimestamp("start_time"),
-                        rs.getTimestamp("end_time"),
-                        v,
-                        ps
+                ParkingSpot ps = ParkingSpotFactory.createSpot(
+                        rs.getInt("ps_id"),
+                        t,
+                        rs.getBoolean("is_reserved"),
+                        rs.getString("spot_type")
                 );
+
+                return new Reservation(rs.getInt("id"), rs.getTimestamp("start_time"), rs.getTimestamp("end_time"), v, ps);
             }
         } catch (SQLException e) {
             System.out.println("FindById Error: " + e.getMessage());
         }
-
         return null;
     }
 
