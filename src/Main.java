@@ -1,3 +1,5 @@
+package edu.aitu.oop3;
+
 import edu.aitu.oop3.data.*;
 import edu.aitu.oop3.repositories.*;
 import edu.aitu.oop3.services.*;
@@ -10,7 +12,7 @@ import java.util.List;
 
 public class Main {
     public static void main(String[] args) {
-        IDB db = new PostgresDB();
+        IDB db = PostgresDB.getInstance();
 
         IParkingSpotRepository spotRepo = new ParkingSpotRepository(db);
         IReservationRepository resRepo = new ReservationRepository(db);
@@ -20,9 +22,12 @@ public class Main {
         IReservationService reservationService = new ReservationService(spotRepo, resRepo, vehicleRepo);
         IPricingService pricingService = new PricingService(resRepo, tariffRepo);
 
+        ParkingLotManager parkingManager = ParkingLotManager.getInstance(reservationService);
+
         Scanner scanner = new Scanner(System.in);
 
         while (true) {
+            System.out.println("\nPARKING MANAGEMENT SYSTEM 2");
             System.out.println("1. Show free parking spots");
             System.out.println("2. Reserve a parking spot");
             System.out.println("3. Leave and pay");
@@ -43,7 +48,7 @@ public class Main {
             try {
                 switch (choice) {
                     case 1:
-                        showFreeSpots(reservationService);
+                        parkingManager.displayFreeSpots();
                         break;
                     case 2:
                         reserveSpot(scanner, reservationService, spotRepo);
@@ -55,36 +60,17 @@ public class Main {
                         showAllTariffs(tariffRepo);
                         break;
                     case 0:
+                        System.out.println("Exiting...");
                         scanner.close();
                         return;
                     default:
-                        System.out.println("Invalid choice. Try again.");
+                        System.out.println("Invalid choice.");
                 }
-            } catch (NoFreeSpotsException e) {
-                System.out.println(e.getMessage());
-            } catch (InvalidVehiclePlateException e) {
-                System.out.println(e.getMessage());
-            } catch (ReservationStatusException e) {
-                System.out.println(e.getMessage());
+            } catch (NoFreeSpotsException | InvalidVehiclePlateException | ReservationStatusException e) {
+                System.out.println("Business Error: " + e.getMessage());
             } catch (Exception e) {
                 System.out.println("Unexpected error: " + e.getMessage());
                 e.printStackTrace();
-            }
-        }
-    }
-
-    private static void showFreeSpots(IReservationService reservationService) {
-        List<ParkingSpot> freeSpots = reservationService.findFreeSpots();
-        if (freeSpots.isEmpty()) {
-            System.out.println("No free parking spots available.");
-        } else {
-            System.out.println("Available parking spots:");
-            System.out.printf("%-4s %-12s %-8s%n", "ID", "Tariff", "Price/h");
-            for (ParkingSpot spot : freeSpots) {
-                System.out.printf("%-4d %-12s %-8d%n",
-                        spot.getId(),
-                        spot.getTariff().getName(),
-                        spot.getTariff().getCost());
             }
         }
     }
@@ -94,30 +80,20 @@ public class Main {
         System.out.print("Enter vehicle plate number: ");
         String plate = scanner.nextLine().trim();
 
-        if (plate.isEmpty()) {
-            System.out.println("Vehicle plate number cannot be empty.");
-            return;
-        }
-
         System.out.print("Enter parking spot ID: ");
         int spotId = scanner.nextInt();
         scanner.nextLine();
 
-        Vehicle vehicle = new Vehicle(0, plate);
         ParkingSpot spot = spotRepo.getById(spotId);
 
         if (spot == null) {
-            System.out.println("Parking spot with ID " + spotId + " not found.");
-        } else if (spot.isReserved()) {
-            System.out.println("Parking spot is already reserved.");
-        } else {
-            Reservation res = reservationService.reserveSpot(spot, vehicle, new Date());
-            System.out.println(
-                    "Reservation created. ID: " + res.getId() +
-                            ", Spot: " + spot.getId() +
-                            ", Tariff: " + spot.getTariff().getName()
-            );
+            System.out.println("Spot not found.");
+            return;
         }
+
+        Vehicle vehicle = new Vehicle(0, plate);
+        Reservation res = reservationService.reserveSpot(spot, vehicle, new Date());
+        System.out.println("Success! Reservation ID: " + res.getId());
     }
 
     private static void releaseAndPay(Scanner scanner, IReservationService reservationService,
@@ -126,37 +102,41 @@ public class Main {
         System.out.print("Enter reservation ID: ");
         int resId = scanner.nextInt();
         scanner.nextLine();
-
-        Reservation existingRes = resRepo.findById(resId);
-        if (existingRes == null) {
-            System.out.println("Reservation with ID " + resId + " not found.");
+        Reservation res = resRepo.findById(resId);
+        if (res == null || res.getTo() != null) {
+            System.out.println("Invalid or already closed reservation.");
             return;
         }
 
-        if (existingRes.getTo() != null) {
-            System.out.println("This reservation is already closed.");
-            return;
-        }
+        reservationService.releaseSpot(res);
+        spotRepo.updateSpotStatus(res.getSpot().getId(), false);
 
-        reservationService.releaseSpot(existingRes);
-        spotRepo.updateStatus(existingRes.getSpot().getId(), false);
+        res = resRepo.findById(resId);
 
-        int cost = pricingService.calculateCost(existingRes);
+        int cost = pricingService.calculateCost(res);
 
-        System.out.println("Parking finished. Total cost: " + cost);
+        long diffInMs = res.getTo().getTime() - res.getFrom().getTime();
+        int minutes = (int) (diffInMs / (1000 * 60));
+        if (minutes <= 0) minutes = 1;
+
+        Invoice invoice = new Invoice.Builder()
+                .setPlate(res.getVehicle().getLicensePlate())
+                .setAmount(cost)
+                .setSpotType(res.getSpot().getType())
+                .setDuration(minutes)
+                .build();
+
+        System.out.println("---------------------");
+        System.out.println("\nFINAL INVOICE");
+        System.out.println("Vehicle:     " + invoice.getPlateNumber());
+        System.out.println("Spot Type:   " + invoice.getSpotType());
+        System.out.println("Duration:    " + invoice.getDurationMinutes() + " minutes");
+        System.out.println("Total Price: " + invoice.getTotalAmount() + " KZT");
+        System.out.println("---------------------");
     }
 
     private static void showAllTariffs(ITariffRepository tariffRepo) {
         List<Tariff> tariffs = tariffRepo.getAllTariffs();
-        if (tariffs.isEmpty()) {
-            System.out.println("No tariffs found.");
-        } else {
-            System.out.println("Available tariffs:");
-            System.out.printf("%-4s %-12s %-8s%n", "ID", "Name", "Price/h");
-            for (Tariff t : tariffs) {
-                System.out.printf("%-4d %-12s %-8d%n",
-                        t.getId(), t.getName(), t.getCost());
-            }
-        }
+        tariffs.forEach(t -> System.out.println(t.getName() + ": " + t.getCost() + " KZT/h"));
     }
 }
